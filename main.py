@@ -10,6 +10,10 @@ from collections import defaultdict
 TILE_SIZE = 16
 SCREEN_WIDTH = 50 * TILE_SIZE  # 800
 SCREEN_HEIGHT = 38 * TILE_SIZE # 608
+
+    # Window state
+is_fullscreen = False
+last_window_restore_time = 0
 BG_COLOR = (40, 42, 88)
 WHITE = (255, 255, 255)
 GREY = (200, 200, 200)
@@ -35,7 +39,7 @@ CREDITS_FONT_PATH =  os.path.join('assets', 'fonts', 'IMFellEnglishSC-Regular.tt
 # Credits Font -> IMFellEnglishSC-Regular.ttf
 ALMANAC = {
     "Fighter": {
-        "description": "The Fighter is a versatile and resilient character, excelling in close combat with a balanced mix of offense and defense. With a wide array of attacks and the ability to block incoming damage, the Fighter is a formidable opponent on the battlefield. Their animations include powerful strikes, agile dodges, and a sturdy shield stance, making them a well-rounded choice for players who enjoy a tactical approach to combat.",
+        "description": "The Fighter is a resilient warrior who balances powerful attacks with dependable defense. Skilled in close combat, this versatile fighter combines heavy strikes, agile dodges, and a sturdy shield stance. With a tactical approach to every battle, the Fighter adapts to different opponents while maintaining strength, endurance, and control throughout combat.",
         "Attack_1": {"damage": 5},
         "Attack_2": {"damage": 8},
         "Attack_3": {"damage": 12},
@@ -43,14 +47,14 @@ ALMANAC = {
     },
 
     "Samurai": {
-        "description": "The Samurai is a swift and precise character, specializing in quick strikes and evasive maneuvers. With a focus on speed and agility, the Samurai can unleash a flurry of attacks that can overwhelm opponents. Their animations feature rapid slashes, graceful jumps, and a unique parry move that allows them to counter enemy attacks. The Samurai is ideal for players who prefer a hit-and-run playstyle and enjoy mastering timing and precision in combat.",
+        "description": "The Samurai is a swift warrior who relies on speed, precision, and perfectly timed attacks. Combining rapid sword strikes with graceful evasive movements, this skilled fighter overwhelms opponents through calculated aggression. A unique parry technique enables effective counterattacks, rewarding players who master timing, maintain momentum, and strike at the perfect moment.",
         "Attack_1": {"damage": 4},
         "Attack_2": {"damage": 7},
         "Attack_3": {"damage": 15},
         "Shield": {"block_percentage": 25},
     },
     "Shinobi": {
-        "description" : "The Shinobi is a stealthy and agile character, adept at using a variety of weapons and tools to outmaneuver opponents. With a focus on versatility and surprise attacks, the Shinobi can adapt to different combat situations with ease. Their animations include swift strikes with a katana, throwing shurikens, and a unique smoke bomb move that allows them to disappear and reappear in different locations. The Shinobi is perfect for players who enjoy a strategic and unpredictable playstyle, utilizing both offense and evasion to gain the upper hand in battle.",
+        "description" : "The Shinobi is a stealthy warrior who combines agility, deception, and unpredictable attacks. Armed with a katana, shurikens, and smoke bombs, this elusive fighter outmaneuvers opponents through surprise and strategic movement. By blending swift offensive strikes with evasive techniques, the Shinobi adapts to changing battles and keeps enemies constantly guessing.",
         "Attack_1": {"damage": 6},
         "Attack_2": {"damage": 9},
         "Attack_3": {"damage": 14},
@@ -118,6 +122,34 @@ def safe_load_font(font_path, size):
         return pygame.font.Font(font_path, size)
     except:
         return pygame.font.SysFont("arial", size, bold=True)
+def present_scaled(window, game_surface):
+    """Scale the logical game surface to fit the current window."""
+
+    window_width, window_height = window.get_size()
+    game_width, game_height = game_surface.get_size()
+
+    scale = min(
+        window_width / game_width,
+        window_height / game_height
+    )
+
+    scaled_width = max(1, round(game_width * scale))
+    scaled_height = max(1, round(game_height * scale))
+
+    # Scale the completed game frame.
+    scaled_game = pygame.transform.smoothscale(
+        game_surface,
+        (scaled_width, scaled_height)
+    )
+
+    # Center the game; black bars preserve its aspect ratio.
+    x = (window_width - scaled_width) // 2
+    y = (window_height - scaled_height) // 2
+
+    window.fill((0, 0, 0))
+    window.blit(scaled_game, (x, y))
+
+    pygame.display.flip()
 def load_animations(character_type, scale):
     """Loads all animation sequences for a given character."""
     animations = {}
@@ -186,6 +218,34 @@ def draw_game_world(screen, background_cache, assets):
     for platform in assets['platforms']:
         platform.update()
         screen.blit(platform.image, platform.rect)
+def to_game_pos(window, game_surface, pos):
+    ww, wh = window.get_size()
+    gw, gh = game_surface.get_size()
+
+    scale = min(ww / gw, wh / gh)
+    sw, sh = round(gw * scale), round(gh * scale)
+
+    ox = (ww - sw) // 2
+    oy = (wh - sh) // 2
+
+    x = (pos[0] - ox) / scale
+    y = (pos[1] - oy) / scale
+
+    if not (0 <= x < gw and 0 <= y < gh):
+        return (-1, -1)
+
+    return (x, y)
+def draw_fight_result(screen, result, font):
+    if result is None:
+        return
+
+    result_text = font.render(result, True, WHITE)
+
+    result_rect = result_text.get_rect(
+        center=(SCREEN_WIDTH // 2, 100)
+    )
+
+    screen.blit(result_text, result_rect)
 
 class QNetwork(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -520,17 +580,22 @@ class Player:
 
     def get_hitbox(self):
         return self.rect.inflate(-int(self.rect.width* 0.4), 0)
+
+
 ################################################ GAME STATE FUNCTIONS ##########################################################
 
-def start_screen(screen, clock, background_cache, assets):
+
+def start_screen(screen, game_surface, clock, background_cache, assets):
 
     global game_state
 
     # Fonts
     title_font = pygame.font.Font(START_SCREEN_FONT_PATH, 44)
     button_font = pygame.font.Font(START_SCREEN_FONT_PATH, 24)
+
     # Panel
     panel_rect = pygame.Rect(SCREEN_WIDTH // 2 - 200, 160, 400, 360)
+
     # Buttons
     buttons = [
         Button(SCREEN_WIDTH // 2 - 160, 220, 320, 50, "BATTLE START", button_font, lambda: set_state("PLAY MODE")),
@@ -538,65 +603,141 @@ def start_screen(screen, clock, background_cache, assets):
         Button(SCREEN_WIDTH // 2 - 160, 360, 320, 50, "COMBAT INPUTS", button_font, lambda: set_state("CONTROLS")),
         Button(SCREEN_WIDTH // 2 - 160, 430, 320, 50, "STAGE CREDITS", button_font, lambda: set_state("CREDITS")),
     ]
+
     # Selected Player Index
     def set_state(state):
         global game_state
         game_state = state
+
     while game_state == "START":
+
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: game_state = "QUIT"
-            for btn in buttons: btn.handle_event(event)
-        draw_game_world(screen, background_cache, assets)
+            if event.type == pygame.QUIT:
+                game_state = "QUIT"
+
+            # Convert window mouse coordinates to game coordinates
+            if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                event.pos = to_game_pos(screen, game_surface, event.pos)
+
+            for btn in buttons:
+                btn.handle_event(event)
+
+        if game_state != "START":
+            break
+
+        # Draw the world on the logical game surface
+        draw_game_world(game_surface, background_cache, assets)
 
         pod_char = assets["players"][selected_player_index]
         pod_char.rect.midbottom = (90, SCREEN_HEIGHT - 30)
         pod_char.update()
-        pod_char.draw(screen)
+        pod_char.draw(game_surface)
 
-        # PANEL BACKPLATE 
-        glass = pygame.Surface((panel_rect.width, panel_rect.height), pygame.SRCALPHA)
-        glass.fill((20,20,35,215))
-        screen.blit(glass, panel_rect.topleft)
-        pygame.draw.rect(screen, GOLD, panel_rect, 2, border_radius=18)
+        # PANEL BACKPLATE
+        glass = pygame.Surface(
+            (panel_rect.width, panel_rect.height),
+            pygame.SRCALPHA
+        )
+        glass.fill((20, 20, 35, 215))
+
+        game_surface.blit(glass, panel_rect.topleft)
+
+        pygame.draw.rect(
+            game_surface,
+            GOLD,
+            panel_rect,
+            2,
+            border_radius=18
+        )
+
         # Title Text
         title_text = title_font.render("FIGHTER COMBAT", True, WHITE)
-        title_x = SCREEN_WIDTH // 2 
+        title_x = SCREEN_WIDTH // 2
         title_y = panel_rect.y - 75
-        screen.blit(title_text, title_text.get_rect(center=(title_x, title_y)))
+
+        game_surface.blit(
+            title_text,
+            title_text.get_rect(center=(title_x, title_y))
+        )
+
         # Draw buttons
-        for btn in buttons: btn.draw(screen)
-        pygame.display.flip()
+        for btn in buttons:
+            btn.draw(game_surface)
+
+        # Scale the completed frame to the actual window
+        present_scaled(screen, game_surface)
+
         clock.tick(60)
 
-def play_mode_screen(screen,clock, background_cache):
-    """Display the play screen"""
+def play_mode_screen(screen, game_surface, clock, background_cache):
+    """Display the Play Mode screen with proper window scaling."""
+
     global game_state
     global selected_player_index
+
     button_font = pygame.font.Font(IN_GAME_FONT_PATH, 28)
-    glass_surface  = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-    glass_surface.fill((0,0,0, 150))
+
+    glass_surface = pygame.Surface(
+        (SCREEN_WIDTH, SCREEN_HEIGHT),
+        pygame.SRCALPHA
+    )
+    glass_surface.fill((0, 0, 0, 150))
 
     def play_ai_cb():
         global game_state
         game_state = "GAME"
-    buttons = [
-        Button(SCREEN_WIDTH // 2 - 150, 330, 300, 60, "Play with AI", button_font, play_ai_cb),
-    ]
-    while game_state == "PLAY MODE":
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT: game_state = "QUIT"
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: game_state = "START"
-            for button in buttons: button.handle_event(event)
-        if game_state != "PLAY MODE": break
-        screen.blit(background_cache, (0,0))
-        screen.blit(glass_surface, (0,0))
-        for button in buttons: button.draw(screen)
 
-        pygame.display.flip()
+    buttons = [
+        Button(
+            SCREEN_WIDTH // 2 - 150,
+            330,
+            300,
+            60,
+            "Play with AI",
+            button_font,
+            play_ai_cb
+        )
+    ]
+
+    while game_state == "PLAY MODE":
+
+        for event in pygame.event.get():
+
+            if event.type == pygame.QUIT:
+                game_state = "QUIT"
+
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                game_state = "START"
+
+            # Convert actual window coordinates to logical game coordinates
+            if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                event.pos = to_game_pos(screen, game_surface, event.pos)
+
+            for button in buttons:
+                button.handle_event(event)
+
+        if game_state != "PLAY MODE":
+            break
+
+        # Draw everything on the fixed-size logical surface
+        game_surface.blit(background_cache, (0, 0))
+        game_surface.blit(glass_surface, (0, 0))
+
+        for button in buttons:
+            button.draw(game_surface)
+
+        # Present the completed frame at the current window size
+        present_scaled(screen, game_surface)
+
         clock.tick(60)
 
-
-def game_loop(screen, clock, background_cache, assets):
+def game_loop(
+    screen,
+    game_surface,
+    clock,
+    background_cache,
+    assets
+):
     """The main game loop where the action happens."""
     global game_state 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -612,11 +753,99 @@ def game_loop(screen, clock, background_cache, assets):
     chosen_ai_char = random.choice(available_chars)
     ai_player = Player(650, 578, chosen_ai_char, scale=PLAYER_SCALE)
     combat_active = True
-
+    fight_end_started = False
+    fight_result = None
+    paused = False
 
     floating_texts = []
     name_font = pygame.font.Font(IN_GAME_FONT_PATH, 20)
     countdown_font = pygame.font.Font(IN_GAME_FONT_PATH, 55)
+    result_font = pygame.font.Font(IN_GAME_FONT_PATH, 50)
+    pause_title_font = pygame.font.Font(IN_GAME_FONT_PATH, 50)
+    pause_button_font = pygame.font.Font(IN_GAME_FONT_PATH, 24)
+
+    pause_controls = False
+    exit_confirmation = False
+    def continue_game():
+        nonlocal paused, pause_controls, exit_confirmation
+        paused = False
+        pause_controls = False
+        exit_confirmation = False
+
+    def show_pause_controls():
+        nonlocal pause_controls, exit_confirmation
+        pause_controls = True
+        exit_confirmation = False
+
+    def show_exit_confirmation():
+        nonlocal exit_confirmation
+        exit_confirmation = True
+
+    def cancel_exit():
+        nonlocal exit_confirmation
+        exit_confirmation = False
+
+    def exit_game():
+        nonlocal paused, pause_controls, exit_confirmation
+        global game_state
+
+        # Current fight is intentionally abandoned.
+        paused = False
+        pause_controls = False
+        exit_confirmation = False
+        game_state = "START"
+
+    pause_buttons = [
+        Button(
+            SCREEN_WIDTH // 2 - 150,
+            260,
+            300,
+            55,
+            "CONTINUE",
+            pause_button_font,
+            continue_game
+        ),
+
+        Button(
+            SCREEN_WIDTH // 2 - 150,
+            330,
+            300,
+            55,
+            "CONTROLS",
+            pause_button_font,
+            show_pause_controls
+        ),
+
+        Button(
+            SCREEN_WIDTH // 2 - 150,
+            400,
+            300,
+            55,
+            "EXIT",
+            pause_button_font,
+            show_exit_confirmation
+        )
+    ]
+
+    exit_yes_button = Button(
+        SCREEN_WIDTH // 2 - 145,
+        360,
+        125,
+        50,
+        "YES",
+        pause_button_font,
+        exit_game
+    )
+
+    exit_no_button = Button(
+        SCREEN_WIDTH // 2 + 20,
+        360,
+        125,
+        50,
+        "NO",
+        pause_button_font,
+        cancel_exit
+    )
     animation_speed = 0.5
 
     # Countdown setup
@@ -656,7 +885,32 @@ def game_loop(screen, clock, background_cache, assets):
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT: game_state = "QUIT"
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:game_state = "START"
+            if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                event.pos = to_game_pos(screen, game_surface, event.pos)
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                print("Pause button pressed. Toggling pause menu.")
+                if exit_confirmation:
+                    # EXIT confirmation -> pause menu
+                    exit_confirmation = False
+
+                elif pause_controls:
+                    # Controls -> pause menu
+                    pause_controls = False
+
+                else:
+                    # Game <-> pause menu
+                    paused = not paused
+                print("paused =", paused)
+            if paused and not pause_controls and not exit_confirmation:
+
+                for button in pause_buttons:
+                    button.handle_event(event)
+
+            # Exit confirmation buttons
+            elif paused and exit_confirmation:
+
+                exit_yes_button.handle_event(event)
+                exit_no_button.handle_event(event)
 
         if game_state != "GAME": # Exit loop if state changed
             break
@@ -686,7 +940,7 @@ def game_loop(screen, clock, background_cache, assets):
                 camera_y = SCREEN_HEIGHT//2
 
 
-        if not in_countdown:
+        if not in_countdown and combat_active:
             keys = pygame.key.get_pressed()
             should_human_face_right = main_player.rect.x < ai_player.rect.x
             if should_human_face_right != human_turn_target_right:
@@ -793,6 +1047,8 @@ def game_loop(screen, clock, background_cache, assets):
             main_player.health = 0
             main_player.action = "Dead"
             combat_active = False
+            fight_end_started = True
+            fight_result = "YOU ARE DEFEATED"
             target_zoom_level = 1.8
             camera_x = main_player.rect.centerx
             camera_y = main_player.rect.centery-30
@@ -802,6 +1058,8 @@ def game_loop(screen, clock, background_cache, assets):
             ai_player.health = 0
             ai_player.action = "Dead"
             combat_active = False
+            fight_end_started = True
+            fight_result = "YOU WON"
             ai_player.move(empty_keys)
             ai_player.update_status()
 
@@ -818,7 +1076,7 @@ def game_loop(screen, clock, background_cache, assets):
             offset_x = random.randint(-screen_shake_intensity, screen_shake_intensity)
             offset_y = random.randint(-screen_shake_intensity, screen_shake_intensity)
             screen_shake_intensity -= 1
-        screen.fill(BG_COLOR)
+        game_surface.fill(BG_COLOR)
 
         shake_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
 
@@ -837,7 +1095,7 @@ def game_loop(screen, clock, background_cache, assets):
                 floating_texts.remove(text)
             else:
                 text.draw(shake_surface)
-
+        draw_fight_result(shake_surface, fight_result, result_font)
         # STATS BOX
         stats_box = pygame.Surface((260, 90), pygame.SRCALPHA)
         stats_box.fill((15,10,5,140))
@@ -855,16 +1113,16 @@ def game_loop(screen, clock, background_cache, assets):
 
             crop_x = max(0, min(camera_x - scaled_w  // 2, SCREEN_WIDTH - scaled_w))
             crop_y = max(0,  min(camera_y - scaled_h // 2, SCREEN_HEIGHT - scaled_h))
-        screen.blit(shake_surface, (offset_x, offset_y))
+        game_surface.blit(shake_surface, (offset_x, offset_y))
         
         if in_countdown:
             overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             overlay.fill((0,0,0,150))
 
-            screen.blit(overlay, (0,0))
+            game_surface.blit(overlay, (0,0))
             current_text = countdown_items[countdown_index]
             text_surf = countdown_font.render(current_text, True, WHITE)
-            screen.blit(text_surf, text_surf.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
+            game_surface.blit(text_surf, text_surf.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2)))
 
             if current_time - last_countdown_tick > 800:
                 last_countdown_tick = current_time
@@ -874,7 +1132,7 @@ def game_loop(screen, clock, background_cache, assets):
         if not combat_active:
             end_overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
             end_overlay.fill((10, 8, 12,180))
-            screen.blit(end_overlay,(0,0))
+            game_surface.blit(end_overlay,(0,0))
 
             if main_player.health <= 0:
                 result_text = "You are Defeated"
@@ -883,166 +1141,652 @@ def game_loop(screen, clock, background_cache, assets):
                 result_text = "You Won"
                 text_color = GREEN
 
+        # =========================================================
+        # PAUSE MENU / CONTROLS / EXIT CONFIRMATION
+        # =========================================================
+        if paused:
 
-        pygame.display.flip()
+            # Dark transparent layer over the current game
+            pause_overlay = pygame.Surface(
+                (SCREEN_WIDTH, SCREEN_HEIGHT),
+                pygame.SRCALPHA
+            )
+            pause_overlay.fill((0, 0, 0, 170))
+            game_surface.blit(pause_overlay, (0, 0))
+
+            # Central panel
+            pause_panel = pygame.Rect(
+                SCREEN_WIDTH // 2 - 210,
+                140,
+                420,
+                390
+            )
+
+            pygame.draw.rect(
+                game_surface,
+                (20, 15, 25),
+                pause_panel,
+                border_radius=18
+            )
+
+            pygame.draw.rect(
+                game_surface,
+                GOLD,
+                pause_panel,
+                2,
+                border_radius=18
+            )
+
+            # -----------------------------------------------------
+            # EXIT CONFIRMATION
+            # -----------------------------------------------------
+            if exit_confirmation:
+
+                title = pause_title_font.render(
+                    "EXIT GAME?",
+                    True,
+                    WHITE
+                )
+
+                game_surface.blit(
+                    title,
+                    title.get_rect(
+                        center=(SCREEN_WIDTH // 2, 205)
+                    )
+                )
+
+                message = pause_button_font.render(
+                    "Are you sure you want to exit?",
+                    True,
+                    WHITE
+                )
+
+                game_surface.blit(
+                    message,
+                    message.get_rect(
+                        center=(SCREEN_WIDTH // 2, 275)
+                    )
+                )
+
+                exit_yes_button.draw(game_surface)
+                exit_no_button.draw(game_surface)
+
+            # -----------------------------------------------------
+            # CONTROLS OVERLAY
+            # -----------------------------------------------------
+            elif pause_controls:
+
+                title = pause_title_font.render(
+                    "CONTROLS",
+                    True,
+                    WHITE
+                )
+
+                game_surface.blit(
+                    title,
+                    title.get_rect(
+                        center=(SCREEN_WIDTH // 2, 190)
+                    )
+                )
+
+                controls = [
+                    "A / Left Arrow  -  Move Left",
+                    "D / Right Arrow -  Move Right",
+                    "Spacebar        -  Jump",
+                    "J               -  Attack 1",
+                    "K               -  Attack 2",
+                    "L               -  Attack 3",
+                    "S               -  Shield",
+                ]
+
+                for i, line in enumerate(controls):
+
+                    text = pause_button_font.render(
+                        line,
+                        True,
+                        GREY
+                    )
+
+                    game_surface.blit(
+                        text,
+                        text.get_rect(
+                            center=(
+                                SCREEN_WIDTH // 2,
+                                245 + i * 32
+                            )
+                        )
+                    )
+
+                back_text = pause_button_font.render(
+                    "Press ESC to return",
+                    True,
+                    GOLD
+                )
+
+                game_surface.blit(
+                    back_text,
+                    back_text.get_rect(
+                        center=(
+                            SCREEN_WIDTH // 2,
+                            480
+                        )
+                    )
+                )
+
+            # -----------------------------------------------------
+            # MAIN PAUSE MENU
+            # -----------------------------------------------------
+            else:
+
+                title = pause_title_font.render(
+                    "PAUSED",
+                    True,
+                    WHITE
+                )
+
+                game_surface.blit(
+                    title,
+                    title.get_rect(
+                        center=(SCREEN_WIDTH // 2, 205)
+                    )
+                )
+
+                for button in pause_buttons:
+                    button.draw(game_surface)
+        present_scaled(screen, game_surface)
         clock.tick(60)
 
-def customize_player_screen(screen, clock, background_cache, assets):
-    """Displays the players onto screen for customization."""
-    global game_state
-    global selected_player
-    
-    title_font = pygame.font.Font(IN_GAME_FONT_PATH, 50)
-    char_font = pygame.font.Font(IN_GAME_FONT_PATH, 28)
 
-    fighter_display = Player(SCREEN_WIDTH * 0.25,300, "Fighter", scale= PLAYER_SCALE)
-    samurai_display = Player(SCREEN_WIDTH * 0.50,300, "Samurai", scale= PLAYER_SCALE)
-    shinobi_display = Player(SCREEN_WIDTH * 0.75,300, "Shinobi", scale= PLAYER_SCALE)
-    player_options = [fighter_display, samurai_display, shinobi_display]
-    def back_to_menu_cb():
+def customize_player_screen(screen, game_surface, clock, background_cache, assets):
+    global game_state, selected_player, selected_player_index
+
+    title_font = safe_load_font(IN_GAME_FONT_PATH, 46)
+    name_font = safe_load_font(IN_GAME_FONT_PATH, 26)
+    button_font = safe_load_font(IN_GAME_FONT_PATH, 20)
+    detail_font = safe_load_font(IN_GAME_FONT_PATH, 21)
+
+    # Separate previews so gameplay characters are not modified.
+    roster = [
+        Player(150, 330, "Fighter", scale=1.7),
+        Player(400, 330, "Samurai", scale=1.7),
+        Player(650, 330, "Shinobi", scale=1.7)
+    ]
+
+    active_detail = None
+
+    def open_details(name):
+        nonlocal active_detail
+        active_detail = name
+
+    def close_details():
+        nonlocal active_detail
+        active_detail = None
+
+    def choose_character(name):
+        global selected_player, selected_player_index
+        selected_player = name
+        selected_player_index = players.index(name)
+        close_details()
+
+    def go_back():
         global game_state
         game_state = "START"
-    
-    back_button = Button(SCREEN_WIDTH // 2 -75, SCREEN_HEIGHT - 100, 150, 50, "Back", char_font,back_to_menu_cb )
+
+    view_buttons = [
+        Button(65, 390, 170, 45, "VIEW DETAILS",
+               button_font, lambda: open_details("Fighter")),
+        Button(315, 390, 170, 45, "VIEW DETAILS",
+               button_font, lambda: open_details("Samurai")),
+        Button(565, 390, 170, 45, "VIEW DETAILS",
+               button_font, lambda: open_details("Shinobi"))
+    ]
+
+    select_button = Button(
+        275, 475, 250, 48, "SELECT CHARACTER",
+        button_font,
+        lambda: choose_character(active_detail)
+    )
+
+    details_back_button = Button(
+        275, 535, 250, 45, "BACK TO ROSTER",
+        button_font, close_details
+    )
+
+    menu_back_button = Button(
+        325, 520, 150, 45, "BACK",
+        button_font, go_back
+    )
+
+    # Cache enlarged Idle previews once, not every frame.
+    detail_previews = {
+        name: Player(160, 325, name, scale=2.5)
+        for name in players
+    }
+
+    def draw_wrapped_text(surface, text, font, color, x, y, max_width, line_height):
+        words = text.split()
+        line = ""
+        for word in words:
+            candidate = f"{line} {word}".strip()
+            if font.size(candidate)[0] > max_width and line:
+                rendered = font.render(line, True, color)
+                surface.blit(rendered, (x, y))
+                y += line_height
+                line = word
+            else:
+                line = candidate
+
+        if line:
+            rendered = font.render(line, True, color)
+            surface.blit(rendered, (x, y))
+            y += line_height
+
+        return y
 
     while game_state == "CUSTOMIZE PLAYER":
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 game_state = "QUIT"
+                continue
 
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1: # Left Click on mouse
-                    clicked_on_player = False
-                    for player in player_options:
-                        if player.rect.collidepoint(event.pos):
-                            clicked_on_player = True
-                            selected_player = player.character_type
-                            break
-                    if not clicked_on_player:
-                        back_button.handle_event(event)
-            if event.type == pygame.MOUSEMOTION:
-                back_button.handle_event(event)
-        if game_state != "CUSTOMIZE PLAYER": # Exit loop if state changed
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                if active_detail:
+                    close_details()
+                else:
+                    go_back()
+
+            if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                logical_pos = to_game_pos(screen, game_surface, event.pos)
+                event = pygame.event.Event(
+                    event.type,
+                    {**event.dict, "pos": logical_pos}
+                )
+
+            if active_detail:
+                select_button.handle_event(event)
+                details_back_button.handle_event(event)
+            else:
+                for button in view_buttons:
+                    button.handle_event(event)
+                menu_back_button.handle_event(event)
+
+        if game_state != "CUSTOMIZE PLAYER":
             break
 
-        for player in player_options:
-            player.update()
-        
-        screen.blit(background_cache, (0,0))
-        # Draw title
-        title_surf = title_font.render("Choose Your Player", True, WHITE)
-        title_rect = title_surf.get_rect(center = (SCREEN_WIDTH// 2, 100))
-        screen.blit(title_surf, title_rect)
+        game_surface.blit(background_cache, (0, 0))
 
-        # Draw players
-        for player in player_options:
-            player.draw(screen)
-            name_surf = char_font.render(player.character_type,True, WHITE)
-            name_rect = name_surf.get_rect(center = (player.rect.centerx, player.rect.bottom  + 20 ))
+        # Darken the level background for readability.
+        overlay = pygame.Surface(
+            (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA
+        )
+        overlay.fill((15, 12, 30, 175))
+        game_surface.blit(overlay, (0, 0))
 
-            if player.character_type == selected_player:
-                draw_outline(player.image, player.rect, GOLD)
-        back_button.draw(screen)
-        pygame.display.flip()
+        if active_detail is None:
+            title = title_font.render("Choose Your Player", True, WHITE)
+            game_surface.blit(
+                title, title.get_rect(center=(400, 75))
+            )
+
+            for character in roster:
+                character.action = "Idle"
+                character.update()
+                character.draw(game_surface)
+
+                name = name_font.render(
+                    character.character_type.upper(), True, WHITE
+                )
+                game_surface.blit(
+                    name,
+                    name.get_rect(
+                        center=(character.rect.centerx, 365)
+                    )
+                )
+
+            for button in view_buttons:
+                button.draw(game_surface)
+
+            menu_back_button.draw(game_surface)
+
+        else:
+            data = ALMANAC[active_detail]
+            character = detail_previews[active_detail]
+
+            heading = title_font.render(active_detail.upper(), True, GOLD)
+            game_surface.blit(
+                heading, heading.get_rect(center=(400, 55))
+            )
+
+            # Enlarged, looping breathing/Idle animation.
+            character.action = "Idle"
+            character.update()
+            character.draw(game_surface)
+
+            description_y = draw_wrapped_text(
+                game_surface,
+                data["description"],
+                detail_font,
+                WHITE,
+                295,
+                125,
+                455,
+                25
+            )
+
+            stats_y = max(355, description_y + 15)
+
+            stats = (
+                f"Attack 1: {data['Attack_1']['damage']}     "
+                f"Attack 2: {data['Attack_2']['damage']}     "
+                f"Attack 3: {data['Attack_3']['damage']}"
+            )
+
+            stats_surface = detail_font.render(stats, True, GOLD)
+            game_surface.blit(stats_surface, (65, stats_y))
+
+            shield_text = (
+                f"Shield Block: "
+                f"{data['Shield']['block_percentage']}%"
+            )
+            shield_surface = detail_font.render(
+                shield_text, True, WHITE
+            )
+            game_surface.blit(
+                shield_surface, (65, stats_y + 32)
+            )
+
+            select_button.draw(game_surface)
+            details_back_button.draw(game_surface)
+
+        present_scaled(screen, game_surface)
         clock.tick(60)
-def credits_screen(screen, clock):
-    """Displays the credits screen."""
-    global game_state 
-    title_font = pygame.font.Font(CREDITS_FONT_PATH, 40)
-    text_font = pygame.font.Font(CREDITS_FONT_PATH, 22)
-    
-    # --- Create Text and Link Objects ---
-    # Line 1
-    design_text = TextLink(0, 200, "Design and Programming:", text_font, "https://github.com/Sanjoli04", color=BLACK)
-    sanjoli_link = TextLink(0, 200, "Sanjoli Vashisth", text_font, "https://github.com/Sanjoli04") 
-    
-    # Line 2
-    assets_text = TextLink(0, 250, "Pixel Art Assets by:", text_font, "https://craftpix.net/", color=BLACK)
-    craftpix_link = TextLink(0, 250, "CraftPix.Net", text_font, "https://craftpix.net/")
-    
-    # Line 3 - Start Screen Music
-    music_text1 = TextLink(0, 300, "Start Screen Music by:", text_font, "https://pixabay.com/users/white_records-32584949/", color=BLACK)
-    maksym_link = TextLink(0, 300, "Maksym Dudchyk from Pixabay", text_font, "https://pixabay.com/users/white_records-32584949/")
 
-    # Line 4 - In-Game Music
-    music_text3 = TextLink(0, 350, "In-Game Music by:", text_font, "https://pixabay.com/users/lnplusmusic-47631836/", color=BLACK)
-    andrii_link = TextLink(0, 350, "Andrii Poradovskyi from Pixabay", text_font, "https://pixabay.com/users/lnplusmusic-47631836/")
+def credits_screen(screen, game_surface, clock):
+    global game_state
 
-    # --- Position the links in a justified two-column layout ---
-    center_x = SCREEN_WIDTH // 2
-    padding = 10 # Space between the columns
+    title_font = safe_load_font(START_SCREEN_FONT_PATH, 39)
+    heading_font = safe_load_font(CREDITS_FONT_PATH, 25)
+    text_font = safe_load_font(CREDITS_FONT_PATH, 22)
+    small_font = safe_load_font(IN_GAME_FONT_PATH, 18)
 
-    # Align all "role" text to the right of the center point
-    design_text.rect.right = center_x - padding
-    assets_text.rect.right = center_x - padding
-    music_text1.rect.right = center_x - padding
-    music_text3.rect.right = center_x - padding
+    def go_back():
+        global game_state
+        game_state = "START"
 
-    # Align all "name/source" text to the left of the center point
-    sanjoli_link.rect.left = center_x + padding
-    craftpix_link.rect.left = center_x + padding
-    maksym_link.rect.left = center_x + padding
-    andrii_link.rect.left = center_x + padding
-    
-    all_links = [design_text, sanjoli_link, assets_text, craftpix_link, music_text1, maksym_link, music_text3, andrii_link]
+    back_button = Button(
+        300, 530, 200, 45,
+        "BACK TO MENU", small_font, go_back
+    )
+
+    links = [
+        TextLink(
+            0, 0, "Sanjoli Vashisth",
+            heading_font,
+            "https://github.com/Sanjoli04",
+            color=WHITE,
+            hover_link_color=GOLD
+        ),
+        TextLink(
+            0, 0, "CraftPix.Net",
+            text_font,
+            "https://craftpix.net/",
+            color=WHITE,
+            hover_link_color=GOLD
+        ),
+        TextLink(
+            0, 0, "Maksym Dudchyk",
+            text_font,
+            "https://pixabay.com/users/white_records-32584949/",
+            color=WHITE,
+            hover_link_color=GOLD
+        ),
+        TextLink(
+            0, 0, "Andrii Poradovskyi",
+            text_font,
+            "https://pixabay.com/users/lnplusmusic-47631836/",
+            color=WHITE,
+            hover_link_color=GOLD
+        )
+    ]
+
+    link_positions = [205, 310, 402, 465]
+
+    for link, y in zip(links, link_positions):
+        link.rect.centerx = SCREEN_WIDTH // 2
+        link.rect.y = y
 
     while game_state == "CREDITS":
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: game_state = "QUIT"
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: game_state = "START"
-            for link in all_links: link.handle_event(event)
-        if game_state != "CREDITS": break
+            if event.type == pygame.QUIT:
+                game_state = "QUIT"
 
-        screen.fill(BG_COLOR)
-        title_surf = title_font.render("Credits", True, GREY)
-        title_rect = title_surf.get_rect(center=(SCREEN_WIDTH // 2, 100))
-        screen.blit(title_surf, title_rect)
-        
-        for link in all_links: link.draw(screen)
-            
-        pygame.display.flip()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    go_back()
+
+            if event.type in (
+                pygame.MOUSEMOTION,
+                pygame.MOUSEBUTTONDOWN
+            ):
+                event = pygame.event.Event(
+                    event.type,
+                    {
+                        **event.dict,
+                        "pos": to_game_pos(
+                            screen, game_surface, event.pos
+                        )
+                    }
+                )
+
+            for link in links:
+                link.handle_event(event)
+
+            back_button.handle_event(event)
+
+        if game_state != "CREDITS":
+            break
+
+        game_surface.fill(BG_COLOR)
+
+        title = title_font.render(
+            "HALL OF LEGENDS", True, WHITE
+        )
+        game_surface.blit(
+            title, title.get_rect(center=(400, 60))
+        )
+
+        subtitle = small_font.render(
+            "Every legend has a story.",
+            True, GOLD
+        )
+        game_surface.blit(
+            subtitle,
+            subtitle.get_rect(center=(400, 108))
+        )
+
+        panel = pygame.Rect(155, 140, 490, 375)
+        pygame.draw.rect(
+            game_surface, (22, 20, 42),
+            panel, border_radius=18
+        )
+        pygame.draw.rect(
+            game_surface, GOLD,
+            panel, 2, border_radius=18
+        )
+
+        headings = [
+            ("GAME DESIGN & PROGRAMMING", 170),
+            ("PIXEL ART ASSETS", 275),
+            ("START SCREEN MUSIC", 365),
+            ("IN-GAME MUSIC", 430)
+        ]
+
+        for label, y in headings:
+            heading = small_font.render(
+                label, True, GOLD
+            )
+            game_surface.blit(
+                heading,
+                heading.get_rect(center=(400, y))
+            )
+
+        for link in links:
+            link.draw(game_surface)
+
+        back_button.draw(game_surface)
+        present_scaled(screen, game_surface)
         clock.tick(60)
-def controls_screen(screen, clock):
-    """Displays the controls and cheat codes."""
+
+def controls_screen(screen, game_surface, clock):
     global game_state
-    title_font = pygame.font.Font(IN_GAME_FONT_PATH, 40)
-    text_font = pygame.font.Font(IN_GAME_FONT_PATH, 24)
-    controls_text = [
-        "A / Left Arrow - Move Left",
-        "D / Right Arrow - Move Right",
-        "Spacebar - Jump",
-        "J - Attack 1",
-        "K - Attack 2",
-        "L - Attack 3",
-        "S - Shield",
-        "",
-        "Press ESC to return"
+
+    title_font = safe_load_font(START_SCREEN_FONT_PATH, 38)
+    section_font = safe_load_font(IN_GAME_FONT_PATH, 27)
+    text_font = safe_load_font(IN_GAME_FONT_PATH, 22)
+    small_font = safe_load_font(IN_GAME_FONT_PATH, 18)
+
+    def go_back():
+        global game_state
+        game_state = "START"
+
+    back_button = Button(
+        300, 520, 200, 50,
+        "BACK TO MENU", text_font, go_back
+    )
+
+    movement = [
+        ("A", "MOVE LEFT"),
+        ("D", "MOVE RIGHT"),
+        ("SPACE", "JUMP"),
+        ("CTRL", "RUN")
     ]
+
+    combat = [
+        ("J", "ATTACK I"),
+        ("K", "ATTACK II"),
+        ("L", "ATTACK III"),
+        ("S", "SHIELD")
+    ]
+
     while game_state == "CONTROLS":
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: game_state = "QUIT"
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE: game_state = "START"
-        if game_state != "CONTROLS": break
-        screen.fill(BLACK)
-        title_surf = title_font.render("Controls", True, WHITE)
-        title_rect = title_surf.get_rect(center = (SCREEN_WIDTH // 2 , 100))
-        screen.blit(title_surf, title_rect)
-        for i, line in enumerate(controls_text):
-            
+            if event.type == pygame.QUIT:
+                game_state = "QUIT"
 
-            line_surf = text_font.render(line, True, GREY)
-            line_rect = line_surf.get_rect(center=(SCREEN_WIDTH // 2, 200 + i * 40))
-            screen.blit(line_surf, line_rect)
-        pygame.display.flip()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    go_back()
+
+            if event.type in (
+                pygame.MOUSEMOTION,
+                pygame.MOUSEBUTTONDOWN
+            ):
+                event = pygame.event.Event(
+                    event.type,
+                    {
+                        **event.dict,
+                        "pos": to_game_pos(
+                            screen, game_surface, event.pos
+                        )
+                    }
+                )
+
+            back_button.handle_event(event)
+
+        if game_state != "CONTROLS":
+            break
+
+        game_surface.fill(BG_COLOR)
+
+        title = title_font.render(
+            "COMBAT MANUAL", True, WHITE
+        )
+        game_surface.blit(
+            title, title.get_rect(center=(400, 65))
+        )
+
+        subtitle = small_font.render(
+            "Master your movement. Perfect your attacks.",
+            True, (215, 185, 125)
+        )
+        game_surface.blit(
+            subtitle, subtitle.get_rect(center=(400, 110))
+        )
+
+        panels = [
+            (pygame.Rect(55, 155, 330, 315),
+             "MOVEMENT", movement),
+            (pygame.Rect(415, 155, 330, 315),
+             "COMBAT", combat)
+        ]
+
+        for rect, heading, entries in panels:
+            pygame.draw.rect(
+                game_surface, (23, 21, 42),
+                rect, border_radius=15
+            )
+            pygame.draw.rect(
+                game_surface, GOLD,
+                rect, 2, border_radius=15
+            )
+
+            heading_surf = section_font.render(
+                heading, True, GOLD
+            )
+            game_surface.blit(
+                heading_surf,
+                heading_surf.get_rect(
+                    center=(rect.centerx, rect.y + 40)
+                )
+            )
+
+            for i, (key, action) in enumerate(entries):
+                y = rect.y + 95 + i * 48
+
+                key_rect = pygame.Rect(
+                    rect.x + 20, y - 6, 85, 36
+                )
+                pygame.draw.rect(
+                    game_surface, (75, 52, 35),
+                    key_rect, border_radius=7
+                )
+                pygame.draw.rect(
+                    game_surface, GOLD,
+                    key_rect, 1, border_radius=7
+                )
+
+                key_surf = small_font.render(
+                    key, True, WHITE
+                )
+                game_surface.blit(
+                    key_surf,
+                    key_surf.get_rect(center=key_rect.center)
+                )
+
+                action_surf = text_font.render(
+                    action, True, WHITE
+                )
+                game_surface.blit(
+                    action_surf,
+                    (rect.x + 120, y)
+                )
+
+        back_button.draw(game_surface)
+        present_scaled(screen, game_surface)
         clock.tick(60)
 ########################################################## MAIN FUNCTION ##########################################################
 def main():
     """Main function to set up and run the game."""
+    global is_fullscreen, last_window_restore_time, selected_player_index, selected_player
     pygame.init()
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    screen = pygame.display.set_mode(
+        (SCREEN_WIDTH, SCREEN_HEIGHT),
+         pygame.RESIZABLE
+    )
     pygame.display.set_caption("Fighter Combat")
     clock = pygame.time.Clock()
 
+    game_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
     # Load all the assets
     assets = {
         'tiles': {},
@@ -1111,17 +1855,49 @@ def main():
     game_state = "START"
     main_player = Player(100, 500, selected_player)
     while game_state != "QUIT":
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                game_state = "QUIT"
+
+            elif event.type == pygame.WINDOWMAXIMIZED:
+                current_time = pygame.time.get_ticks()
+
+                # First click = normal maximized window
+                # Second click quickly = fullscreen
+                if current_time - last_window_restore_time < 500:
+                    is_fullscreen = True
+                    screen = pygame.display.set_mode(
+                        (0, 0),
+                        pygame.FULLSCREEN
+                    )
+
+                last_window_restore_time = current_time
+
+            elif event.type == pygame.WINDOWRESTORED:
+                current_time = pygame.time.get_ticks()
+
+                # Restore from fullscreen -> normal window
+                if is_fullscreen:
+                    is_fullscreen = False
+                    screen = pygame.display.set_mode(
+                        (SCREEN_WIDTH, SCREEN_HEIGHT),
+                        pygame.RESIZABLE
+                    )
+
+                last_window_restore_time = current_time
+
         if game_state == "START":
-            start_screen(screen, clock, background_cache, assets)
+            start_screen(screen, game_surface, clock, background_cache, assets)
         elif game_state == "PLAY MODE":
-            play_mode_screen(screen, clock, background_cache.copy())
+            play_mode_screen(screen, game_surface, clock, background_cache.copy())
         elif game_state == "GAME":
-            game_loop(screen, clock, background_cache, assets)
+            game_loop(screen,game_surface,clock,background_cache,assets)
         elif game_state == "CUSTOMIZE PLAYER":
-            customize_player_screen(screen, clock, background_cache, assets)
-        elif game_state== "CONTROLS": controls_screen(screen, clock)
+            customize_player_screen(screen, game_surface, clock, background_cache, assets)
+        elif game_state== "CONTROLS": controls_screen(screen, game_surface, clock)
         elif game_state == "CREDITS":
-            credits_screen(screen, clock)
+            credits_screen(screen, game_surface, clock)
+        
 
     pygame.quit()
 
